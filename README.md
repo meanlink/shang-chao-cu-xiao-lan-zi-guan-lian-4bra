@@ -7,17 +7,19 @@
 - **订单导入**：接收门店 POS 每日 `orders_2026-11-20.csv`，校验门店、商品族和订单完整性，形成购物篮。
 - **商品目录**：维护商品族、SKU 与门店价格，保证算法按商品族聚合而不是按临时名称匹配。
 - **关联规则工作台**：运行 Apriori，查看支持度、置信度、提升度和门店口径一致性，提交候选规则。
-- **促销审核**：运营经理审核并发布规则，发布后可供门店排期使用。
-- **门店促销排期**：经理从已发布规则的后件中选在售 SKU，指定门店、执行人、档期、单件立减和限量。可在开档前取消。执行人在北京时间约定档期内确认开档。
+- **促销审核**：运营经理审核并发布规则，发布后可供门店排期使用。发现已发布规则有误时，经理可在审核工作台按门店撤回，规则对其他门店仍然有效。
+- **门店促销排期**：经理从已发布规则的后件中选在售 SKU，指定门店、执行人、档期、单件立减和限量。可在开档前取消。执行人在北京时间约定档期内确认开档。规则在某门店撤回后，该店未开档档期自动取消并让出原时段，且不能再用这条规则排期或开档。
 - **购物篮门槛**：经理开档前为规则的每个前件商品族设最低件数，并设单票立减上限。保存即启用该档期的逐票核销，开档后条件锁定。
-- **逐票核销流水**：指定执行人录入本营业日的 POS 小票号和 SKU 件数。核定展示立减件数、金额与登记后的余量。登记会重新校验；门店作废时保留原商品行及作废说明，同时归还档期限量。
-- **促销核销对账**：指定执行人登记 POS 对账凭证和实际核销件数，经理确认并结档，或退回门店更正。分析员可查看档期和对账结果。
+- **逐票核销流水**：指定执行人录入本营业日的 POS 小票号和 SKU 件数。核定展示立减件数、金额与登记后的余量。登记会重新校验；门店作废时保留原商品行及作废说明，同时归还档期限量。规则按门店撤回后，撤回前已登记小票保留原立减与对账资格、同票重试仍幂等返回原流水，撤回后的新票一律拒收。
+- **促销核销对账**：指定执行人登记 POS 对账凭证和实际核销件数，经理确认并结档，或退回门店更正。分析员可查看档期和对账结果。撤回门店已开档档期的对账与小票作废照常办理，对账退回更正期间也继续停收新票。
 
 主流程是订单明细 → 规则计算 → 运营审核 → 门店排期和开档 → POS 核销复核。组合支持度小于 8% 或各门店支持度偏差超过 12 个百分点时，后端将规则标记为阻断，审核通过也不能发布。
 
 同一门店、同一后件 SKU 的未结档档期不能重叠。档期最多 31 天，立减金额最高为锁定目录单价的 50%。核销件数不能超过限量。同店 POS 凭证不得跨档期复用，提前结档或零核销需记录原因。预留折扣 = 单件立减 × 限量，实耗折扣 = 单件立减 × 实际核销件数。核销商品净销售额仅按锁定目录价和折扣计算。
 
 启用逐票核销后，同票各前件商品族的在售 SKU 购入件数分别累加，立减件数取立减 SKU 件数与单票上限的较小值。若额度不足，整票拒绝。同一门店的小票号只能登记一次，按同档期、同商品行重试会返回已有流水。提交对账时 POS 填报件数必须等于未作废流水之和。待复核和已结档时锁定流水，退回才恢复门店的更正操作。历史档期和未启用逐票核销的新档期使用原有 POS 汇总对账。
+
+按门店撤回与小票登记通过 `rule_store_withdrawals` 行锁串行：撤回事务提交前已办成的小票有效，提交后的新票（含对账退回更正期间的新票）拒收；同票重试走幂等回放、不重复核销并返回原结果。撤回只取消该规则在该门店的未开档档期，已开档档期保留原状态供作废小票和对账，其他门店的规则状态与排期完全不受影响。
 
 ### 早餐搭售演练
 
@@ -56,7 +58,7 @@ curl http://localhost:19245/health
 | 任务与缓存 | Redis 7 + heartbeat worker |
 | 鉴权 | JWT 结构化 token（HMAC-SHA256）+ 三角色权限 |
 
-`backend/src/db.py` 初始化原有表和 `backend/src/models/promotion.py` 中的扩展表，已有库启动时自动补表。`backend/src/services/association.py` 实现 Apriori。排期与对账使用 `/promotions` 下的接口，输入模型、业务状态和事务分别在 `backend/src/schemas/promotion.py` 和 `backend/src/services/promotion.py`。原生页面由 `frontend/app.js` 路由，`frontend/promo.js` 渲染排期及对账。`backend/src/constants/enums.py` 的 `RuleStatus` 与 `UserRole` 对应 `frontend/app.js` 的状态与角色标签。`PromotionStatus` 和 `SettlementStatus` 对应 `frontend/promo.js` 的状态标签及扩展表的状态列。`backend/src/models/basket_offer.py` 和 `basket_receipt.py` 定义逐票促销条件及小票证据。`/basket-offers` 路由连接 `basket_terms.py`、`basket_qualification.py`、`basket_receipts.py`、`basket_ledger.py`，供 `frontend/basket-terms.js` 和 `frontend/basket-ledger.js` 渲染。
+`backend/src/db.py` 初始化原有表和 `backend/src/models/promotion.py` 中的扩展表，已有库启动时自动补表。`backend/src/services/association.py` 实现 Apriori。排期与对账使用 `/promotions` 下的接口，输入模型、业务状态和事务分别在 `backend/src/schemas/promotion.py` 和 `backend/src/services/promotion.py`。原生页面由 `frontend/app.js` 路由，`frontend/promo.js` 渲染排期及对账。`backend/src/constants/enums.py` 的 `RuleStatus` 与 `UserRole` 对应 `frontend/app.js` 的状态与角色标签。`PromotionStatus` 和 `SettlementStatus` 对应 `frontend/promo.js` 的状态标签及扩展表的状态列。`backend/src/models/basket_offer.py` 和 `basket_receipt.py` 定义逐票促销条件及小票证据。`/basket-offers` 路由连接 `basket_terms.py`、`basket_qualification.py`、`basket_receipts.py`、`basket_ledger.py`，供 `frontend/basket-terms.js` 和 `frontend/basket-ledger.js` 渲染。`backend/src/models/rule_withdrawal.py` 与 `services/rule_withdrawal.py` 实现「规则 × 门店」撤回开关，经 `/reviews/rules/{rule_id}/withdraw` 等接口驱动，撤回事务与小票登记通过 `rule_store_withdrawals` 行锁串行化。
 
 ## 环境变量
 

@@ -112,12 +112,12 @@ export async function basketLedger(context, selectedId) {
   const path = plan ? `/basket-offers/plans/${plan.id}` : null;
   const detail = path ? await api(path) : null;
   if (!isCurrent()) return;
-  const canRecord = role === 'store_operator' && plan?.status === 'active';
+  const canRecord = role === 'store_operator' && plan?.status === 'active' && !plan.withdrawal_id;
   shell(head('PROMOTIONS / RECEIPT JOURNAL', '逐票核销流水', '按原始 POS 小票核定折扣和剩余额度，结档时以有效流水核对填报件数。') + `
     <div class="basket-layout basket-ledger-layout">
       <aside class="panel"><h3>逐票促销档期</h3>
         ${plans.length ? `<div class="promo-queue">${plans.map(row => `<button type="button" data-ledger-plan="${row.id}" aria-pressed="${row === plan}">
-          <span><b>${escapeHtml(row.store_name)}</b><br><small class="promo-hint">#${row.id} · ${escapeHtml(row.sku)} ${escapeHtml(row.product_name)}</small></span>
+          <span><b>${escapeHtml(row.store_name)}</b><br><small class="promo-hint">#${row.id} · ${escapeHtml(row.sku)} ${escapeHtml(row.product_name)}</small>${row.withdrawal_id ? '<br><span class="status status-blocked">规则已撤回 · 停收新票</span>' : ''}</span>
           ${badge(planLabels[row.status])}</button>`).join('')}</div>` : '<div class="empty">暂无已启用逐票核销的档期。</div>'}
         <div class="promo-link"><button class="btn alt small" data-page="${plan && plan.status !== 'planned' ? 'settlements' : 'promotions'}" ${plan ? `data-target-id="${plan.id}"` : ''}>${plan && plan.status !== 'planned' ? '查看核销对账' : '查看促销排期'}</button></div>
       </aside>
@@ -126,6 +126,7 @@ export async function basketLedger(context, selectedId) {
           <div class="basket-rule-strip"><div><span>有效核销 / 总限量</span><b>${Number(plan.ledger_units)} / ${plan.unit_cap} 件</b></div>
             <div><span>已用折扣</span><b>${money.format(plan.ledger_discount)}</b></div><div><span>有效小票</span><b>${Number(plan.receipt_count)} 张</b></div></div>
           <p class="promo-hint">${detail.requirements.map(row => `${escapeHtml(row.family)} ≥ ${row.minimum_units} 件`).join(' · ')} · 单票最多立减 ${plan.per_receipt_cap} 件</p>
+          ${plan.withdrawal_id ? `<div class="note bad" role="status">该搭售规则已在本门店撤回（${escapeHtml(plan.withdrawal_reason)}）。停止登记新小票；已登记小票保留原立减与对账资格，可继续作废处理。</div>` : ''}
         </section>
         ${canRecord ? receiptDesk(plan, detail.catalog) : ''}${journal(plan, detail.receipts, role)}
       ` : '<section class="panel empty">经理启用逐票核销后，档期和剩余额度会显示在这里。</section>'}</div>

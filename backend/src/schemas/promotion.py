@@ -29,3 +29,8 @@ class SettlementIn(BaseModel):
 class SettlementReviewIn(BaseModel):
     decision: Literal['confirm', 'return']
     note: Note = ''
+
+
+class RuleWithdrawalIn(BaseModel):
+    store_id: PositiveInt
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=240)]

@@ -12,6 +12,14 @@ from .promotion import one
 def qualify(cur, plan, lines, today):
     if plan['status'] != PromotionStatus.active or not plan['starts_on'] <= today <= plan['ends_on']:
         raise HTTPException(409, '只有档期内已开档的促销可核定小票')
+    # Locking read: a concurrent rule withdrawal either committed before this
+    # point (then the stop switch is visible and booking is refused) or blocks
+    # until this receipt is booked, so the receipt stays valid.
+    withdrawn = one(cur, """SELECT id FROM rule_store_withdrawals
+                            WHERE rule_id=%s AND store_id=%s FOR UPDATE""",
+                    (plan['rule_id'], plan['store_id']))
+    if withdrawn:
+        raise HTTPException(409, '该搭售规则已在本门店撤回，停止登记新小票；已登记小票仍有效')
     offer = one(cur, 'SELECT per_receipt_cap FROM basket_offers WHERE plan_id=%s', (plan['id'],))
     if not offer:
         raise HTTPException(409, '该档期使用汇总对账，未启用逐票核销')

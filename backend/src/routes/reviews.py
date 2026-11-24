@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from ..db import fetch_one, execute
 from ..security import current_user, require_roles
+from ..schemas.promotion import RuleWithdrawalIn
+from ..services import rule_withdrawal
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 class ReviewIn(BaseModel): decision: str; comment: str = ""
 @router.post("/{rule_id}")
@@ -28,3 +30,15 @@ def publish(rule_id:int,user=Depends(require_roles("manager"))):
     execute("UPDATE association_rules SET status='published',published_at=NOW() WHERE id=%s",(rule_id,))
     execute("INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,detail) VALUES(%s,%s,%s,%s,%s)",(user['id'],'publish_rule','association_rule',rule_id,'store execution queue'))
     return {"status":"published","message":"已进入门店执行队列"}
+
+@router.get("/withdrawals")
+def withdrawals(user=Depends(require_roles("manager"))):
+    return rule_withdrawal.list_withdrawals()
+
+@router.get("/withdrawals/{withdrawal_id}")
+def withdrawal_detail(withdrawal_id:int,user=Depends(require_roles("manager"))):
+    return rule_withdrawal.withdrawal_detail(withdrawal_id)
+
+@router.post("/rules/{rule_id}/withdraw", status_code=201)
+def withdraw_rule(rule_id:int,data:RuleWithdrawalIn,user=Depends(require_roles("manager"))):
+    return rule_withdrawal.withdraw_rule(rule_id, data, user)

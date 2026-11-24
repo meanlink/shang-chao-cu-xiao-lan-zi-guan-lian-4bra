@@ -6,6 +6,7 @@ from .config import MYSQL
 from .models.basket_offer import BASKET_OFFER_SCHEMA
 from .models.basket_receipt import BASKET_RECEIPT_SCHEMA
 from .models.promotion import PROMOTION_SCHEMA
+from .models.rule_withdrawal import RULE_WITHDRAWAL_SCHEMA
 
 SCHEMA = [
 """CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, email VARCHAR(120) UNIQUE NOT NULL, display_name VARCHAR(80) NOT NULL, role VARCHAR(30) NOT NULL, password_hash CHAR(64) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
@@ -29,7 +30,7 @@ def init_db():
         try:
             with connect() as conn:
                 with conn.cursor() as cur:
-                    for sql in [*SCHEMA, *PROMOTION_SCHEMA, *BASKET_OFFER_SCHEMA, *BASKET_RECEIPT_SCHEMA]:
+                    for sql in [*SCHEMA, *PROMOTION_SCHEMA, *BASKET_OFFER_SCHEMA, *BASKET_RECEIPT_SCHEMA, *RULE_WITHDRAWAL_SCHEMA]:
                         cur.execute(sql)
             return
         except Exception:

@@ -2,6 +2,7 @@ const planLabels = {
   planned: ['待开档', 'draft'], active: ['执行中', 'approved'],
   settling: ['待对账', 'submitted'], closed: ['已结档', 'published'],
   cancelled: ['已取消', 'rejected'],
+  withdrawn: ['规则已撤回', 'blocked'],
 };
 const reportLabels = {
   submitted: ['待复核', 'submitted'], returned: ['退回更正', 'rejected'],
@@ -63,6 +64,11 @@ function renderPlanForm(options) {
 export { act, badge, errorLine, escapeHtml, input, money, planLabels, post };
 
 function planActions(plan, role) {
+  if (plan.withdrawal_id) {
+    if (plan.status === 'cancelled') return '<span class="promo-hint">撤回时自动取消，已让出原时段</span>';
+    if (['active', 'settling'].includes(plan.status)) return '<span class="promo-hint">停收新票，可作废小票并完成对账</span>';
+    if (plan.status === 'closed') return '<span class="promo-hint">撤回前已结档，记录保留</span>';
+  }
   if (role === 'manager' && plan.status === 'planned') return `<button class="btn alt small" data-page="basket-terms" data-target-id="${plan.id}">设置购物篮门槛</button> <button class="btn alt small" data-action="cancel">取消档期</button>`;
   if (role === 'store_operator' && plan.status === 'planned') return '<button class="btn small green" data-action="activate">确认开档</button>';
   if (['active', 'settling', 'closed'].includes(plan.status)) return `<button class="btn alt small" data-page="settlements" data-target-id="${plan.id}">查看对账</button>`;
@@ -85,7 +91,7 @@ export async function promotionPlans({ api, role, head, shell, toast, refresh, i
           <td><b>${escapeHtml(p.product_name)}</b><br><span class="promo-hint">${escapeHtml(p.sku)} · ${escapeHtml(p.consequent)}</span>
             <br><span class="promo-hint">规则 #${p.rule_id} · ${escapeHtml(p.operator_name)}</span></td>
           <td>${p.unit_cap} 件 × ${money.format(p.unit_discount)}<br><b>${money.format(p.reserved_discount)}</b></td>
-          <td>${badge(planLabels[p.status])}<div class="promo-action">${planActions(p, role)}</div></td>
+          <td>${badge(planLabels[p.status])}${p.withdrawal_id ? `<br><span class="status status-blocked" style="margin-top:5px">规则已按门店撤回</span><br><small class="promo-hint">${escapeHtml(p.withdrawal_reason)}</small>` : ''}<div class="promo-action">${planActions(p, role)}</div></td>
         </tr>`).join('')}</tbody></table></div>${errorLine}` : '<div class="empty">当前没有可查看的档期。经理排期并指定执行人后，记录会出现在这里。</div>'}
         <div class="note promo-policy">同店同 SKU 的未结档促销不可重叠。单件立减最高为目录单价的 50%，预留额度等于单件立减乘以限量。</div>
       </section>
@@ -93,22 +99,38 @@ export async function promotionPlans({ api, role, head, shell, toast, refresh, i
     </div>`);
   const form = document.querySelector('#promotion-plan-form');
   if (form) {
-    const { rule_id: ruleSelect, product_id: skuSelect } = form.elements;
+    const { rule_id: ruleSelect, product_id: skuSelect, store_id: storeSelect } = form.elements;
     const price = form.querySelector('#sku-price');
+    const withdrawnPairs = new Map((options.withdrawals || []).map(w => [`${w.rule_id}:${w.store_id}`, w.reason]));
     const showPrice = () => {
       const product = options.products.find(p => String(p.id) === skuSelect.value);
       price.textContent = product ? `目录单价 ${money.format(product.price)}` : '选择规则以查看匹配商品';
+    };
+    const checkWithdrawn = () => {
+      const key = `${ruleSelect.value}:${storeSelect.value}`;
+      const reason = withdrawnPairs.get(key);
+      const alert = form.querySelector('[role="alert"]');
+      if (reason) {
+        alert.textContent = `该规则已在本门店撤回：${reason}，不能再用于排期`;
+        alert.hidden = false;
+      } else {
+        alert.hidden = true;
+      }
+      return !reason;
     };
     ruleSelect.onchange = () => {
       const rule = options.rules.find(r => String(r.id) === ruleSelect.value);
       skuSelect.replaceChildren(new Option('请选择', ''), ...options.products.filter(p => p.family === rule?.consequent)
         .map(p => new Option(`${p.name} · ${p.sku}`, p.id)));
       showPrice();
+      checkWithdrawn();
     };
     skuSelect.onchange = showPrice;
+    storeSelect.onchange = checkWithdrawn;
     showPrice();
     form.onsubmit = event => {
       event.preventDefault();
+      if (!checkWithdrawn()) return;
       const data = Object.fromEntries(new FormData(form));
       act(form, event.submitter, () => post(api, '/promotions/plans', data), () => {
         toast('已排期，指定执行人可在档期内开档');
@@ -135,6 +157,7 @@ function renderReconciliation(row, role) {
     <div><dt>核销商品净销售额</dt><dd>${money.format(row.promo_net_sales)}</dd></div>
     </dl>${row.note ? `<p class="promo-hint">门店说明 · ${escapeHtml(row.note)}</p>` : ''}` : '';
   const ledger = row.ledger_units == null ? '' : `<div class="note promo-policy">逐票核销有效件数 · ${Number(row.ledger_units)} 件。POS 填报须与有效流水一致。 <button class="btn alt small" data-page="basket-ledger" data-target-id="${row.plan_id}">查看流水</button></div>`;
+  const withdrawal = row.withdrawal_id ? `<div class="note bad">规则已在本门店撤回：${escapeHtml(row.withdrawal_reason)}。已登记小票保留原立减与对账资格，新小票停止登记${row.plan_status === 'active' ? '（含对账退回后的更正期）' : ''}。</div>` : '';
   const feedback = row.review_note ? `<div class="note ${row.status === 'returned' ? 'bad' : 'good'}">复核意见 · ${escapeHtml(row.review_note)}</div>` : '';
   let controls = '';
   if (role === 'store_operator' && row.plan_status === 'active') {
@@ -155,7 +178,7 @@ function renderReconciliation(row, role) {
   return `<div class="promo-heading"><b>${escapeHtml(row.store_name)} · ${escapeHtml(row.product_name)}</b>
     ${row.status ? badge(reportLabels[row.status]) : badge(planLabels[row.plan_status])}</div>
     <div class="promo-hint">档期 #${row.plan_id} · 截止 ${row.ends_on} · 限量 ${row.unit_cap} 件</div>
-    ${ledger}${summary}${feedback}${controls}`;
+    ${withdrawal}${ledger}${summary}${feedback}${controls}`;
 }
 
 export async function promotionSettlements({ api, role, head, shell, toast, refresh, isCurrent }, selectedId) {

@@ -12,10 +12,12 @@ BUSINESS_TZ = timezone(timedelta(hours=8))
 PLAN_VIEW = """
     SELECT p.*, r.antecedent, r.consequent, s.code store_code, s.name store_name,
            sku.sku, sku.name product_name, u.display_name operator_name,
-           p.unit_discount * p.unit_cap reserved_discount
+           p.unit_discount * p.unit_cap reserved_discount,
+           w.id withdrawal_id, w.reason withdrawal_reason, w.withdrawn_at
     FROM promotion_plans p JOIN association_rules r ON r.id=p.rule_id
     JOIN stores s ON s.id=p.store_id JOIN products sku ON sku.id=p.product_id
     JOIN users u ON u.id=p.operator_id
+    LEFT JOIN rule_store_withdrawals w ON w.rule_id=p.rule_id AND w.store_id=p.store_id
 """
 
 
@@ -29,6 +31,7 @@ def plan_options():
         'rules': fetch_all("SELECT id, antecedent, consequent FROM association_rules "
                            "WHERE status='published' AND support >= 0.08 AND store_consistent=1 ORDER BY id"),
         'stores': fetch_all('SELECT id, code, name FROM stores WHERE active=1 ORDER BY code'),
+        'withdrawals': fetch_all('SELECT rule_id, store_id, reason FROM rule_store_withdrawals'),
         'products': fetch_all("SELECT p.id,p.sku,p.name,p.price,f.name family FROM products p "
                               "JOIN product_families f ON f.id=p.family_id "
                               "WHERE p.status='active' AND f.active=1 ORDER BY p.sku"),
@@ -62,6 +65,9 @@ def create_plan(data, user):
         rule = one(cur, 'SELECT * FROM association_rules WHERE id=%s FOR SHARE', (data.rule_id,))
         if not rule or rule['status'] != 'published' or rule['support'] < Decimal('0.08') or not rule['store_consistent']:
             raise HTTPException(409, '只有通过统计门槛且已发布的规则能用于排期')
+        from .rule_withdrawal import store_withdrawn
+        if store_withdrawn(cur, data.rule_id, data.store_id):
+            raise HTTPException(409, '该规则已在本门店撤回，不能再用于排期')
         sku = one(cur, "SELECT p.price, f.name family FROM products p JOIN product_families f ON f.id=p.family_id "
                        "WHERE p.id=%s AND p.status='active' AND f.active=1", (data.product_id,))
         if not sku or sku['family'] != rule['consequent']:
@@ -99,6 +105,9 @@ def activate_plan(plan_id, user):
         plan = locked_plan(cur, plan_id, user)
         if plan['status'] != Plan.planned:
             raise HTTPException(409, '只有已排期档期可开档')
+        if one(cur, 'SELECT id FROM rule_store_withdrawals WHERE rule_id=%s AND store_id=%s',
+               (plan['rule_id'], plan['store_id'])):
+            raise HTTPException(409, '规则已在本门店撤回，未开档档期已取消，不能开档')
         if not plan['starts_on'] <= business_today() <= plan['ends_on']:
             raise HTTPException(409, '只能在约定档期内开档')
         cur.execute('UPDATE promotion_plans SET status=%s, started_at=UTC_TIMESTAMP() WHERE id=%s', (Plan.active, plan_id))
@@ -122,6 +131,7 @@ def list_settlements(user):
         SELECT p.id plan_id, p.status plan_status, p.ends_on, p.unit_cap, p.unit_discount,
                p.list_price, s.code store_code, s.name store_name, sku.sku, sku.name product_name,
                e.id, e.status, e.pos_reference, e.redeemed_units, e.note, e.review_note,
+               w.id withdrawal_id, w.reason withdrawal_reason,
                IF(o.plan_id IS NULL,NULL,COALESCE(l.ledger_units,0)) ledger_units,
                e.redeemed_units * p.unit_discount actual_discount,
                (p.unit_cap - e.redeemed_units) * p.unit_discount unspent_discount,
@@ -129,6 +139,7 @@ def list_settlements(user):
         FROM promotion_plans p JOIN stores s ON s.id=p.store_id JOIN products sku ON sku.id=p.product_id
         LEFT JOIN promotion_settlements e ON e.plan_id=p.id
         LEFT JOIN basket_offers o ON o.plan_id=p.id
+        LEFT JOIN rule_store_withdrawals w ON w.rule_id=p.rule_id AND w.store_id=p.store_id
         LEFT JOIN ({LEDGER_TOTALS}) l ON l.plan_id=p.id
         WHERE p.status IN ('active','settling','closed') {scope}
         ORDER BY (p.status='closed'), p.id DESC

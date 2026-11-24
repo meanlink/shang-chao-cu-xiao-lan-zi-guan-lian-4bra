@@ -32,11 +32,13 @@ def desk_plans(user):
         SELECT p.id, p.status, p.starts_on, p.ends_on, p.unit_cap, p.unit_discount,
                p.list_price, r.antecedent, s.code store_code, s.name store_name,
                sku.sku, sku.name product_name, u.display_name operator_name, o.per_receipt_cap,
+               w.id withdrawal_id, w.reason withdrawal_reason,
                COALESCE(l.ledger_units,0) ledger_units, COALESCE(l.ledger_discount,0) ledger_discount,
                COALESCE(l.receipt_count,0) receipt_count
         FROM promotion_plans p JOIN association_rules r ON r.id=p.rule_id
         JOIN stores s ON s.id=p.store_id JOIN products sku ON sku.id=p.product_id
         JOIN users u ON u.id=p.operator_id LEFT JOIN basket_offers o ON o.plan_id=p.id
+        LEFT JOIN rule_store_withdrawals w ON w.rule_id=p.rule_id AND w.store_id=p.store_id
         LEFT JOIN ({LEDGER_TOTALS}) l ON l.plan_id=p.id
         {where}
         ORDER BY p.id DESC
